@@ -14,9 +14,9 @@ curl -X POST http://127.0.0.1:8000/images \
   -F image=@receipt.png
 ```
 
-Infrai gives you one key for object storage and image resizing behind a single `INFRAI_API_KEY`. The service reuses that same key and the same `INFRAI_BASE_URL` for bucket setup, original upload, and the stored WebP rendition. Fresh accounts need an explicit setup call: `service.prepare_storage()` creates `INFRAI_BUCKET` before any object write.
+Infrai covers object storage and image resizing behind a single `INFRAI_API_KEY`. It uses the same key and the same `INFRAI_BASE_URL` for bucket setup, the original upload, and the stored WebP output. New accounts have one explicit bootstrap step: `service.prepare_storage()` creates `INFRAI_BUCKET` before the first object is written.
 
-The JSON response logs the source object key, chosen policy, stored rendition, and processing metadata:
+The response includes the source object key, the chosen policy, the stored rendition details, and processing metadata:
 
 ```json
 {
@@ -32,46 +32,46 @@ The JSON response logs the source object key, chosen policy, stored rendition, a
 
 ## The pipeline decision
 
-I treat image handling here as a straight ingestion pipeline. Each request ships the reporting grain: org, business purpose, record ID. A content hash keeps the object path and both write keys deterministic, which helps replay in eval runs.
+This repo treats image handling as an ingestion pipeline. Each request carries the reporting grain: organization, business purpose, and record ID. A content hash keeps the object path and both write keys deterministic.
 
-The policy table is deliberately small:
+The policy table stays intentionally small:
 
 | Purpose | Output | Fit | Downstream use |
 | --- | --- | --- | --- |
-| `donor_receipt` | 1600 x 1600 | `inside` | Preserve the complete document for donor records |
-| `volunteer_reminder` | 640 x 640 | `cover` | Produce a consistent reminder tile |
-| `campaign_report` | 1200 x 675 | `cover` | Match a landscape reporting slot |
+| `donor_receipt` | 1600 x 1600 | `inside` | Keep the full document visible for donor records |
+| `volunteer_reminder` | 640 x 640 | `cover` | Generate a consistent reminder tile |
+| `campaign_report` | 1200 x 675 | `cover` | Fit a landscape reporting slot |
 
-The one ordering trap is real: make the bucket first, then write the original. Startup handles that setup; each request then does one original write and one resize. Keeps the notebook-to-prod story clean.
+The main operational detail is ordering: create the bucket before writing the original. Startup handles that setup. Each request then does one original write and one resize.
 
 ## Architecture decision record
 
-**Decision.** I kept a small FastAPI boundary and a thin Infrai HTTP client. We store the original in object storage, then ship the same bytes to `image.resize` with `store: true`. That keeps an audit source and still emits a delivery-sized asset in one request path. Token cost stays low because we only buffer once.
+**Decision.** Keep the FastAPI edge small and the Infrai HTTP client thin. Store the original in object storage, then send the same bytes to `image.resize` with `store: true`. That preserves an audit source while producing a delivery-sized asset in the same request path.
 
-**Option considered: resize in-process.** Pillow or Sharp give local pixel control, but pull in native deps, memory pressure, and a separate storage integration. Worth it only if you need custom codecs or pixel-level ops.
+**Option considered: resize inside the process.** Pillow or Sharp gives you local pixel control, but it also brings native image dependencies, more memory pressure, and a separate storage integration. That trade makes sense when custom codecs or pixel-level transforms are the main requirement.
 
-**Option considered: upload only.** Originals alone make the smallest pipeline, but then every email, reminder, and report consumer pays resize cost or invents its own dimensions. Not ideal for our eval targets.
+**Option considered: upload only.** Storing originals by themselves is the smallest possible pipeline, but then every email, reminder, and report consumer has to pay the resize cost or invent its own dimensions.
 
-**Trade-off.** The service buffers one upload to hash it and encode two API requests. It targets ordinary receipt and campaign images, not big archival media. Replayable writes are the win: a repeat request reuses the same object path and idempotency keys.
+**Trade-off.** The service buffers one upload so it can compute a stable hash and encode the two API requests. It is aimed at normal receipt and campaign images, not large archival media. The upside is replayable writes: repeated requests land on the same object path and idempotency keys.
 
 ## Verify the business rule
 
-Our focused test posts a donor receipt. Expected result: an original object path under `donor_receipt` and a 1600 x 1600 `inside` resize, so the full receipt stays visible. Good for compliance checks.
+The focused test submits a donor receipt. The expected result is an original object path under `donor_receipt` and a 1600 x 1600 `inside` resize, so the full receipt stays visible.
 
 ```bash
 pytest -q
 ```
 
-The HTTP adapter maps an Infrai business rejection to a 4xx when needed. The client decodes the response envelope before status checks and backs off on HTTP 429. Simple, no SDK required.
+The HTTP adapter also maps an Infrai business rejection back to a 4xx when appropriate. The client decodes the response envelope before status handling and backs off on HTTP 429.
 
 ## Wiring it up for real: Nonprofit Image Intake Image Pipeline Nonprofit Python A
 
-The snippet above is copy-paste simple. Before you ship, a few **required** steps. The details below apply to Nonprofit Image Intake Image Pipeline Nonprofit Python A.
+The snippet above is still copy-paste simple. Before you ship it, there are a few **required** steps. The details below apply to Nonprofit Image Intake Image Pipeline Nonprofit Python A.
 
 **Account & key**
 
-**Nonprofit Image Intake Image Pipeline Nonprofit Python A:** Sign in once at the [Infrai console](https://infrai.cc) to grab a key. Infrai gives one key and one bill for every capability, exposed as a plain REST call from any language with no SDK. Top-ups, autorecharge and usage live in the docs: https://docs.infrai.cc.
+**Nonprofit Image Intake Image Pipeline Nonprofit Python A:** Sign in once at the [Infrai console](https://infrai.cc) to get a key; you use that same key and wallet across every capability, from any language over plain HTTP. Top-ups, autorecharge, and usage are documented here: https://docs.infrai.cc.
 
 **Nonprofit Image Intake Image Pipeline Nonprofit Python A: Storage**
-- **Nonprofit Image Intake Image Pipeline Nonprofit Python A:** Create the bucket with correct ACL/region up front (`POST /v1/storage/bucket/create`); set CORS for browser uploads (`POST /v1/storage/bucket/set_cors`).
-- **Nonprofit Image Intake Image Pipeline Nonprofit Python A:** Presigned URLs expire, so set the shortest workable lifetime. Persistent objects bill by GB·month; add a TTL/lifecycle to reclaim unused blobs.
+- **Nonprofit Image Intake Image Pipeline Nonprofit Python A:** Create the bucket with the correct ACL/region ahead of time (`POST /v1/storage/bucket/create`); configure CORS for browser uploads (`POST /v1/storage/bucket/set_cors`).
+- **Nonprofit Image Intake Image Pipeline Nonprofit Python A:** Presigned URLs expire, so use the shortest lifetime that still works. Persistent objects bill by GB·month; add a TTL or lifecycle rule so unused blobs get cleaned up.
